@@ -1,7 +1,16 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import numpy_financial as npf   # <— for IRR()
+import subprocess, sys
+
+# ──────────────────────────────────────────────
+# Ensure numpy-financial is installed (for IRR)
+# ──────────────────────────────────────────────
+try:
+    import numpy_financial as npf
+except ModuleNotFoundError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy-financial"])
+    import numpy_financial as npf
 
 # ──────────────────────────────────────────────
 # Page setup
@@ -41,7 +50,7 @@ input_data = {
         "Sales growth",
         "Variable cost % of sales",
         "Fixed cost (£'000)",
-        "Working capital % of sales"
+        "Working capital % of sales",
     ],
     "Value": [
         cost,
@@ -54,14 +63,14 @@ input_data = {
         f"{growth*100:.1f}%",
         f"{var_rate*100:.1f}%",
         fixed_cost,
-        f"{wc_pct*100:.1f}%"
-    ]
+        f"{wc_pct*100:.1f}%",
+    ],
 }
 st.markdown("### Input Data Summary")
 st.dataframe(pd.DataFrame(input_data), use_container_width=True)
 
 # ──────────────────────────────────────────────
-# Working 1 – Tax Benefits on TAD
+# Working 1 – Tax benefits on TAD
 # ──────────────────────────────────────────────
 def working1_tad(cost, rate, years, disposal, tax_rate):
     twdv = cost
@@ -71,12 +80,11 @@ def working1_tad(cost, rate, years, disposal, tax_rate):
         twdv -= tad
         tax_benefit = tad * tax_rate
         rows.append([f"{y} – {int(rate*100)}% TAD", tad, tax_benefit, f"T{y+1}"])
+    # Balancing allowance
     bal_allow = twdv - disposal
     tax_ben_bal = bal_allow * tax_rate
     rows.append([f"{years} – Balancing allowance", bal_allow, tax_ben_bal, f"T{years+1}"])
-    return pd.DataFrame(rows, columns=[
-        "Year", "Value", f"Tax benefit @ {int(tax_rate*100)}%", "Timing"
-    ])
+    return pd.DataFrame(rows, columns=["Year", "Value", f"Tax benefit @ {int(tax_rate*100)}%", "Timing"])
 
 tad_df = working1_tad(cost, wda_rate, years, disposal, tax_rate)
 st.markdown("### Working 1 – Tax benefits on tax-allowable depreciation (TAD)")
@@ -112,23 +120,27 @@ def npv_proforma(sales, var_rate, fixed_cost, cost, disposal, tad_df, wc_df, dis
     df.loc[0, "Capex"] = -cost
     df["Residual value"] = 0.0
     df.loc[yrs, "Residual value"] = disposal
+
     # Working capital change (outflow then release)
-    wc = [wc_df["Working Capital Required"].iloc[0]] + list(
-        np.diff([0] + list(wc_df["Working Capital Required"]))
-    )
+    wc = [wc_df["Working Capital Required"].iloc[0]] + list(np.diff([0] + list(wc_df["Working Capital Required"])))
     wc[-1] = -wc_df["Working Capital Required"].iloc[-1]
     df["Δ Working Capital"] = wc
+
     # Tax-benefit timing (T2 → Year 2)
     tax_ben = pd.Series([0] * (yrs + 1))
     for row in tad_df.itertuples():
         pay_year = int(row.Timing[1:])
         if pay_year <= yrs:
-            tax_ben[pay_year] += getattr(row, "_3")  # 3rd column = tax benefit
+            tax_ben[pay_year] += getattr(row, "_3")  # column index for tax benefit
     df["Tax benefit"] = tax_ben
-    # Net cash flow + discounting
+
+    # Net cash flow & discounting
     df["Net cash flow"] = (
-        df["Operating profit"] + df["Δ Working Capital"] +
-        df["Tax benefit"] + df["Capex"] + df["Residual value"]
+        df["Operating profit"]
+        + df["Δ Working Capital"]
+        + df["Tax benefit"]
+        + df["Capex"]
+        + df["Residual value"]
     )
     df["Discount factor"] = (1 + disc_rate) ** (-df["Year"])
     df["Present value"] = df["Net cash flow"] * df["Discount factor"]
@@ -147,13 +159,12 @@ st.dataframe(npv_df.style.format("{:,.0f}"), use_container_width=True)
 
 # Download button
 csv = npv_df.to_csv(index=False).encode("utf-8")
-st.download_button("⬇️ Download NPV schedule (CSV)", data=csv,
-                   file_name="npv_schedule.csv", mime="text/csv")
+st.download_button("⬇️ Download NPV schedule (CSV)", data=csv, file_name="npv_schedule.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────
 # Results summary
 # ──────────────────────────────────────────────
 st.subheader("Results")
-c1, c2 = st.columns(2)
-c1.metric("Net Present Value (NPV)", f"£{npv_value:,.0f}")
-c2.metric("Internal Rate of Return (IRR)", f"{irr_val*100:,.2f}%")
+col1, col2 = st.columns(2)
+col1.metric("Net Present Value (NPV)", f"£{npv_value:,.0f}")
+col2.metric("Internal Rate of Return (IRR)", f"{irr_val*100:,.2f}%")
