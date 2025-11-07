@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import numpy_financial as npf   # <— for IRR()
 
 # ──────────────────────────────────────────────
 # Page setup
@@ -56,13 +57,11 @@ input_data = {
         f"{wc_pct*100:.1f}%"
     ]
 }
-input_df = pd.DataFrame(input_data)
-
 st.markdown("### Input Data Summary")
-st.dataframe(input_df, use_container_width=True)
+st.dataframe(pd.DataFrame(input_data), use_container_width=True)
 
 # ──────────────────────────────────────────────
-# Working 1 – Tax benefits on TAD
+# Working 1 – Tax Benefits on TAD
 # ──────────────────────────────────────────────
 def working1_tad(cost, rate, years, disposal, tax_rate):
     twdv = cost
@@ -75,8 +74,9 @@ def working1_tad(cost, rate, years, disposal, tax_rate):
     bal_allow = twdv - disposal
     tax_ben_bal = bal_allow * tax_rate
     rows.append([f"{years} – Balancing allowance", bal_allow, tax_ben_bal, f"T{years+1}"])
-    df = pd.DataFrame(rows, columns=["Year", "Value", f"Tax benefit @ {int(tax_rate*100)}%", "Timing"])
-    return df
+    return pd.DataFrame(rows, columns=[
+        "Year", "Value", f"Tax benefit @ {int(tax_rate*100)}%", "Timing"
+    ])
 
 tad_df = working1_tad(cost, wda_rate, years, disposal, tax_rate)
 st.markdown("### Working 1 – Tax benefits on tax-allowable depreciation (TAD)")
@@ -86,7 +86,7 @@ st.dataframe(
 )
 
 # ──────────────────────────────────────────────
-# Working 2 – Working Capital (Required balances)
+# Working 2 – Working Capital (Required Balances)
 # ──────────────────────────────────────────────
 def working2_wc(sales, pct):
     wc_req = [s * pct for s in sales]
@@ -112,19 +112,23 @@ def npv_proforma(sales, var_rate, fixed_cost, cost, disposal, tad_df, wc_df, dis
     df.loc[0, "Capex"] = -cost
     df["Residual value"] = 0.0
     df.loc[yrs, "Residual value"] = disposal
+    # Working capital change (outflow then release)
     wc = [wc_df["Working Capital Required"].iloc[0]] + list(
         np.diff([0] + list(wc_df["Working Capital Required"]))
     )
     wc[-1] = -wc_df["Working Capital Required"].iloc[-1]
     df["Δ Working Capital"] = wc
+    # Tax-benefit timing (T2 → Year 2)
     tax_ben = pd.Series([0] * (yrs + 1))
     for row in tad_df.itertuples():
         pay_year = int(row.Timing[1:])
         if pay_year <= yrs:
-            tax_ben[pay_year] += getattr(row, "_3")
+            tax_ben[pay_year] += getattr(row, "_3")  # 3rd column = tax benefit
     df["Tax benefit"] = tax_ben
+    # Net cash flow + discounting
     df["Net cash flow"] = (
-        df["Operating profit"] + df["Δ Working Capital"] + df["Tax benefit"] + df["Capex"] + df["Residual value"]
+        df["Operating profit"] + df["Δ Working Capital"] +
+        df["Tax benefit"] + df["Capex"] + df["Residual value"]
     )
     df["Discount factor"] = (1 + disc_rate) ** (-df["Year"])
     df["Present value"] = df["Net cash flow"] * df["Discount factor"]
@@ -132,10 +136,19 @@ def npv_proforma(sales, var_rate, fixed_cost, cost, disposal, tad_df, wc_df, dis
 
 npv_df = npv_proforma(sales, var_rate, fixed_cost, cost, disposal, tad_df, wc_df, disc_rate)
 npv_value = npv_df["Present value"].sum()
-irr_val = np.irr(npv_df["Net cash flow"])
+
+try:
+    irr_val = npf.irr(npv_df["Net cash flow"])
+except Exception:
+    irr_val = float("nan")
 
 st.markdown("### NPV Pro-forma")
 st.dataframe(npv_df.style.format("{:,.0f}"), use_container_width=True)
+
+# Download button
+csv = npv_df.to_csv(index=False).encode("utf-8")
+st.download_button("⬇️ Download NPV schedule (CSV)", data=csv,
+                   file_name="npv_schedule.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────
 # Results summary
